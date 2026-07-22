@@ -23,3 +23,6 @@ messaging = { path = "../contracts/messaging", features = ["testutils"] }
 cross-chain-router = { path = "../contracts/cross-chain-router", features = ["testutils"] }
 shared = { path = "../shared" }
 upgradeability = { path = "../contracts/upgradeability" }
+did-registry = { path = "../contracts/did-registry", features = ["testutils"] }
+identity-hub = { path = "../contracts/identity-hub", features = ["testutils"] }
+verifiable-credentials = { path = "../contracts/verifiable-credentials", features = ["testutils"] }

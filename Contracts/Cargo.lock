@@ -521,6 +521,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "did-registry"
+version = "0.1.0"
+dependencies = [
+ "shared",
+ "soroban-sdk",
+ "stellar-xdr 20.1.0",
+ "upgradeability",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -859,6 +869,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
+name = "identity-hub"
+version = "0.1.0"
+dependencies = [
+ "shared",
+ "soroban-sdk",
+ "stellar-xdr 20.1.0",
+ "upgradeability",
+]
+
+[[package]]
 name = "indexmap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -894,6 +914,8 @@ dependencies = [
  "academy-rewards",
  "academy-vesting",
  "cross-chain-router",
+ "did-registry",
+ "identity-hub",
  "messaging",
  "shared",
  "social_rewards",
@@ -901,6 +923,7 @@ dependencies = [
  "stellara-synthetic-assets",
  "trading",
  "upgradeability",
+ "verifiable-credentials",
 ]
 
 [[package]]
@@ -1427,7 +1450,7 @@ dependencies = [
  "soroban-env-macros",
  "soroban-wasmi",
  "static_assertions",
- "stellar-xdr",
+ "stellar-xdr 26.0.1",
  "wasmparser",
 ]
 
@@ -1489,7 +1512,7 @@ dependencies = [
  "quote",
  "serde",
  "serde_json",
- "stellar-xdr",
+ "stellar-xdr 26.0.1",
  "syn",
 ]
 
@@ -1547,7 +1570,7 @@ dependencies = [
  "soroban-env-common",
  "soroban-spec",
  "soroban-spec-rust",
- "stellar-xdr",
+ "stellar-xdr 26.0.1",
  "syn",
 ]
 
@@ -1559,7 +1582,7 @@ checksum = "e3afb753b6ec3329af9744091ebe9f4c047c8fd1078d333b3f83a598a22bef33"
 dependencies = [
  "base64",
  "sha2",
- "stellar-xdr",
+ "stellar-xdr 26.0.1",
  "thiserror",
  "wasmparser",
 ]
@@ -1575,7 +1598,7 @@ dependencies = [
  "quote",
  "sha2",
  "soroban-spec",
- "stellar-xdr",
+ "stellar-xdr 26.0.1",
  "syn",
  "thiserror",
 ]
@@ -1648,6 +1671,16 @@ dependencies = [
  "crate-git-revision",
  "data-encoding",
  "heapless",
+]
+
+[[package]]
+name = "stellar-xdr"
+version = "20.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e59cdf3eb4467fb5a4b00b52e7de6dca72f67fac6f9b700f55c95a5d86f09c9d"
+dependencies = [
+ "crate-git-revision",
+ "escape-bytes",
 ]
 
 [[package]]
@@ -1798,6 +1831,16 @@ name = "upgradeability"
 version = "0.1.0"
 dependencies = [
  "soroban-sdk",
+]
+
+[[package]]
+name = "verifiable-credentials"
+version = "0.1.0"
+dependencies = [
+ "shared",
+ "soroban-sdk",
+ "stellar-xdr 20.1.0",
+ "upgradeability",
 ]
 
 [[package]]

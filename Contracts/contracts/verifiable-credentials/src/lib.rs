@@ -1,31 +1,48 @@
+#![no_std]
 use soroban_sdk::{
-    contracttype, symbol_short, Address, Env, Symbol, Vec, Map, Bytes, BytesN,
-    contracterror, require_auth
+    contract, contractimpl, contracttype, symbol_short,
+    Address, Bytes, Env, Map, Symbol, Vec,
+    contracterror,
 };
 use shared::governance::{GovernanceManager, GovernanceRole};
 use shared::events::{extended_topics, CredentialIssuedEvent, CredentialRevokedEvent};
 
-// Verifiable Credential structure
+// ─────────────────────────────────────────────────────────────────────────────
+// Storage keys
+// ─────────────────────────────────────────────────────────────────────────────
+
+mod keys {
+    use soroban_sdk::{symbol_short, Symbol};
+    pub const ROLES:    Symbol = symbol_short!("roles");
+    pub const CREDS:    Symbol = symbol_short!("creds");
+    pub const REVOCATN: Symbol = symbol_short!("revocatn");
+    pub const VC_CNT:   Symbol = symbol_short!("vc_cnt");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Data structures
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerifiableCredential {
     pub id: Symbol,
     pub context: Symbol,
     pub type_: Vec<Symbol>,
-    pub issuer: Symbol,  // DID of issuer
+    pub issuer: Symbol,
     pub issuance_date: u64,
     pub expiration_date: Option<u64>,
     pub credential_subject: CredentialSubject,
     pub proof: Proof,
-    pub credential_status: Option<CredentialStatus>,
+    pub credential_status: CredentialStatus,
     pub created_at: u64,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CredentialSubject {
-    pub id: Symbol,  // DID of subject
-    pub claims: Map<Symbol, Symbol>,  // Key-value pairs of claims
+    pub id: Symbol,
+    pub claims: Map<Symbol, Symbol>,
 }
 
 #[contracttype]
@@ -35,7 +52,7 @@ pub struct Proof {
     pub created: u64,
     pub verification_method: Symbol,
     pub proof_purpose: Symbol,
-    pub proof_value: Bytes,  // Base64 encoded signature
+    pub proof_value: Bytes,
     pub domain: Option<Symbol>,
 }
 
@@ -44,84 +61,99 @@ pub struct Proof {
 pub struct CredentialStatus {
     pub id: Symbol,
     pub type_: Symbol,
-    pub status: Symbol,  // "valid", "revoked", "suspended"
+    pub status: Symbol,
     pub revocation_reason: Option<Symbol>,
 }
 
-// Credential types
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum CredentialType {
-    KYCVerified = 0,
-    AccreditedInvestor = 1,
+    KYCVerified            = 0,
+    AccreditedInvestor     = 1,
     EducationalAchievement = 2,
-    ProfessionalLicense = 3,
-    Custom = 4,
+    ProfessionalLicense    = 3,
+    Custom                 = 4,
 }
 
-// Revocation registry entry
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RevocationEntry {
     pub credential_id: Symbol,
-    pub revoker: Symbol,  // DID of revoker
+    pub revoker: Symbol,
     pub revocation_date: u64,
     pub reason: Symbol,
     pub proof: Bytes,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
 // Error codes
+// ─────────────────────────────────────────────────────────────────────────────
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum VCError {
-    InvalidCredential = 4001,
-    UnauthorizedIssuer = 4002,
-    CredentialNotFound = 4003,
-    AlreadyRevoked = 4004,
-    ExpiredCredential = 4005,
-    InvalidProof = 4006,
-    InvalidSubject = 4007,
-    GovernanceError = 4008,
+    InvalidCredential   = 4001,
+    UnauthorizedIssuer  = 4002,
+    CredentialNotFound  = 4003,
+    AlreadyRevoked      = 4004,
+    ExpiredCredential   = 4005,
+    InvalidProof        = 4006,
+    InvalidSubject      = 4007,
+    GovernanceError     = 4008,
+    /// Returned when `initialize()` is called more than once.
+    AlreadyInitialized  = 4009,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Contract
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[contract]
 pub struct VerifiableCredentialsContract;
 
-#[soroban_sdk::contractimpl]
+#[contractimpl]
 impl VerifiableCredentialsContract {
-    // Initialize contract with governance
+    // ── Initialization ────────────────────────────────────────────────────
+
+    /// Initialize the contract with governance roles.
+    ///
+    /// Protected by the upgradeability module — a second call returns
+    /// `AlreadyInitialized` without touching any state.
     pub fn initialize(
         env: Env,
         admin: Address,
         approvers: Vec<Address>,
         executor: Address,
-    ) {
-        // Set up governance roles
-        let roles_key = symbol_short!("roles");
+    ) -> Result<(), VCError> {
+        if upgradeability::is_initialized(&env) {
+            return Err(VCError::AlreadyInitialized);
+        }
+        upgradeability::mark_initialized(&env);
+
         let mut role_map: Map<Address, GovernanceRole> = Map::new(&env);
-        
         role_map.set(admin.clone(), GovernanceRole::Admin);
         for approver in approvers.iter() {
             role_map.set(approver.clone(), GovernanceRole::Approver);
         }
         role_map.set(executor, GovernanceRole::Executor);
-        
-        env.storage().persistent().set(&roles_key, &role_map);
-        
-        // Initialize credential counter
-        let counter_key = symbol_short!("vc_cnt");
-        env.storage().persistent().set(&counter_key, &0u64);
 
-        // Initialize revocation registry
-        let revocation_key = symbol_short!("revocatn");
+        env.storage().persistent().set(&keys::ROLES, &role_map);
+        env.storage().persistent().set(&keys::VC_CNT, &0u64);
+
+        // Initialise empty revocation registry
         let revocations: Map<Symbol, RevocationEntry> = Map::new(&env);
-        env.storage().persistent().set(&revocation_key, &revocations);
+        env.storage().persistent().set(&keys::REVOCATN, &revocations);
+
+        Ok(())
     }
 
-    // Issue a verifiable credential
+    // ── Issuance ──────────────────────────────────────────────────────────
+
     pub fn issue_credential(
         env: Env,
+        caller: Address,
         issuer_did: Symbol,
         subject_did: Symbol,
         credential_type: CredentialType,
@@ -129,11 +161,8 @@ impl VerifiableCredentialsContract {
         expiration_date: Option<u64>,
         proof: Proof,
     ) -> Result<Symbol, VCError> {
-        // Verify issuer is authorized (simplified - in production, check issuer registry)
-        let caller = env.current_contract_address();
-        require_auth!(&caller);
+        caller.require_auth();
 
-        // Validate inputs
         if proof.proof_value.is_empty() {
             return Err(VCError::InvalidProof);
         }
@@ -143,98 +172,76 @@ impl VerifiableCredentialsContract {
             }
         }
 
-        // Generate credential ID
-        let counter_key = symbol_short!("vc_cnt");
-        let count: u64 = env.storage().persistent().get(&counter_key).unwrap_or(0);
-        let credential_id = symbol_short!(&format!("vc-{}", count + 1));
+        let count: u64 = env.storage().persistent().get(&keys::VC_CNT).unwrap_or(0);
+        let cred_id = Self::count_symbol(&env, count, "vc");
 
-        // Create credential type vector
         let mut type_vec = Vec::new(&env);
         type_vec.push_back(symbol_short!("vc"));
-        
-        match credential_type {
-            CredentialType::KYCVerified => type_vec.push_back(symbol_short!("kyc_vc")),
-            CredentialType::AccreditedInvestor => type_vec.push_back(symbol_short!("acc_vc")),
-            CredentialType::EducationalAchievement => type_vec.push_back(symbol_short!("edu_vc")),
-            CredentialType::ProfessionalLicense => type_vec.push_back(symbol_short!("pro_vc")),
-            CredentialType::Custom => type_vec.push_back(symbol_short!("cust_vc")),
-        }
-
-        // Create credential subject
-        let subject = CredentialSubject {
-            id: subject_did,
-            claims,
+        let type_tag = match credential_type {
+            CredentialType::KYCVerified            => symbol_short!("kyc_vc"),
+            CredentialType::AccreditedInvestor     => symbol_short!("acc_vc"),
+            CredentialType::EducationalAchievement => symbol_short!("edu_vc"),
+            CredentialType::ProfessionalLicense    => symbol_short!("pro_vc"),
+            CredentialType::Custom                 => symbol_short!("cust_vc"),
         };
+        type_vec.push_back(type_tag.clone());
 
-        // Create credential status
-        let status = CredentialStatus {
-            id: symbol_short!(&format!("status-{}", count + 1)),
-            type_: symbol_short!("csl2021"),
-            status: symbol_short!("valid"),
-            revocation_reason: None,
-        };
-
-        // Create verifiable credential
+        let status_id = Self::count_symbol(&env, count, "sts");
         let credential = VerifiableCredential {
-            id: credential_id.clone(),
+            id: cred_id.clone(),
             context: symbol_short!("w3c_ctx"),
             type_: type_vec,
-            issuer: issuer_did,
+            issuer: issuer_did.clone(),
             issuance_date: env.ledger().timestamp(),
             expiration_date,
-            credential_subject: subject,
+            credential_subject: CredentialSubject {
+                id: subject_did.clone(),
+                claims,
+            },
             proof,
-            credential_status: Some(status),
+            credential_status: CredentialStatus {
+                id: status_id,
+                type_: symbol_short!("csl2021"),
+                status: symbol_short!("valid"),
+                revocation_reason: None,
+            },
             created_at: env.ledger().timestamp(),
         };
 
-        // Store credential
-        let credentials_key = symbol_short!("creds");
-        let mut credentials: Map<Symbol, VerifiableCredential> = env
-            .storage()
-            .persistent()
-            .get(&credentials_key)
+        let mut creds: Map<Symbol, VerifiableCredential> = env
+            .storage().persistent().get(&keys::CREDS)
             .unwrap_or_else(|| Map::new(&env));
-
-        credentials.set(credential_id.clone(), credential);
-        env.storage().persistent().set(&credentials_key, &credentials);
-
-        // Update counter
-        env.storage().persistent().set(&counter_key, &(count + 1));
+        creds.set(cred_id.clone(), credential);
+        env.storage().persistent().set(&keys::CREDS, &creds);
+        env.storage().persistent().set(&keys::VC_CNT, &(count + 1));
 
         env.events().publish(
             (extended_topics::CREDENTIAL_ISSUED,),
             CredentialIssuedEvent {
-                credential_id: credential_id.clone(),
+                credential_id: cred_id.clone(),
                 issuer_did,
-                subject_did: credential.credential_subject.id.clone(),
-                credential_type: credential.type_.get(1).unwrap_or(symbol_short!("Custom")),
+                subject_did,
+                credential_type: type_tag,
                 timestamp: env.ledger().timestamp(),
             },
         );
 
-        credential_id
-        Ok(credential_id)
+        Ok(cred_id)
     }
 
-    // Verify a verifiable credential
-    pub fn verify_credential(env: Env, credential_id: Symbol) -> Result<bool, VCError> {
-        // Get credential
-        let credential = Self::get_credential(env.clone(), credential_id.clone())?;
+    // ── Verification ──────────────────────────────────────────────────────
 
-        // Check if credential is revoked
-        if Self::is_revoked(env.clone(), credential_id.clone()) {
+    pub fn verify_credential(env: Env, credential_id: Symbol) -> Result<bool, VCError> {
+        let credential = Self::load_cred(&env, &credential_id)?;
+
+        if Self::is_revoked(&env, &credential_id) {
             return Ok(false);
         }
-
-        // Check expiration
-        if let Some(expiration) = credential.expiration_date {
-            if env.ledger().timestamp() > expiration {
+        if let Some(exp) = credential.expiration_date {
+            if env.ledger().timestamp() > exp {
                 return Ok(false);
             }
         }
-
-        // Verify proof (simplified - in production, implement proper cryptographic verification)
         if credential.proof.proof_value.is_empty() {
             return Err(VCError::InvalidProof);
         }
@@ -242,171 +249,154 @@ impl VerifiableCredentialsContract {
         Ok(true)
     }
 
-    // Revoke a verifiable credential
+    // ── Revocation ────────────────────────────────────────────────────────
+
     pub fn revoke_credential(
         env: Env,
+        caller: Address,
         credential_id: Symbol,
         revoker_did: Symbol,
         reason: Symbol,
         proof: Bytes,
-    ) {
-        // Get credential
-        let mut credential = Self::get_credential(env.clone(), credential_id.clone()).unwrap();
+    ) -> Result<(), VCError> {
+        caller.require_auth();
 
-        // Check authorization (issuer or authorized revoker)
-        let caller = env.current_contract_address();
-        require_auth!(&caller);
+        let mut credential = Self::load_cred(&env, &credential_id)?;
 
-        // Check if already revoked
-        if Self::is_revoked(env.clone(), credential_id.clone()) {
-            panic!("Credential already revoked");
+        if Self::is_revoked(&env, &credential_id) {
+            return Err(VCError::AlreadyRevoked);
         }
 
-        // Create revocation entry
-        let revocation = RevocationEntry {
+        // Record revocation
+        let mut revocations: Map<Symbol, RevocationEntry> = env
+            .storage().persistent().get(&keys::REVOCATN)
+            .unwrap_or_else(|| Map::new(&env));
+        revocations.set(credential_id.clone(), RevocationEntry {
             credential_id: credential_id.clone(),
             revoker: revoker_did,
             revocation_date: env.ledger().timestamp(),
             reason: reason.clone(),
             proof,
-        };
+        });
+        env.storage().persistent().set(&keys::REVOCATN, &revocations);
 
-        // Store revocation
-        let revocations_key = symbol_short!("revocatn");
-        let mut revocations: Map<Symbol, RevocationEntry> = env
-            .storage()
-            .persistent()
-            .get(&revocations_key)
+        // Update status in the credential record
+        credential.credential_status.status = symbol_short!("revoked");
+        credential.credential_status.revocation_reason = Some(reason.clone());
+
+        let mut creds: Map<Symbol, VerifiableCredential> = env
+            .storage().persistent().get(&keys::CREDS)
             .unwrap_or_else(|| Map::new(&env));
-
-        revocations.set(credential_id.clone(), revocation);
-        env.storage().persistent().set(&revocations_key, &revocations);
-
-        // Update credential status
-        if let Some(mut status) = credential.credential_status {
-            status.status = symbol_short!("revoked");
-            status.revocation_reason = Some(reason);
-            credential.credential_status = Some(status);
-        }
-
-        // Store updated credential
-        let credentials_key = symbol_short!("creds");
-        let mut credentials: Map<Symbol, VerifiableCredential> = env
-            .storage()
-            .persistent()
-            .get(&credentials_key)
-            .unwrap_or_else(|| Map::new(&env));
-
-        credentials.set(credential_id.clone(), credential);
-        env.storage().persistent().set(&credentials_key, &credentials);
+        creds.set(credential_id.clone(), credential);
+        env.storage().persistent().set(&keys::CREDS, &creds);
 
         env.events().publish(
             (extended_topics::CREDENTIAL_REVOKED,),
             CredentialRevokedEvent {
                 credential_id,
-                revoked_by: env.current_contract_address(),
+                revoked_by: caller,
                 reason,
                 timestamp: env.ledger().timestamp(),
             },
         );
+
+        Ok(())
     }
 
-    // Get credential details
+    // ── Queries ───────────────────────────────────────────────────────────
+
     pub fn get_credential_details(env: Env, credential_id: Symbol) -> VerifiableCredential {
-        Self::get_credential(env, credential_id).unwrap()
+        Self::load_cred(&env, &credential_id).unwrap()
     }
 
-    // Get credentials by subject
     pub fn get_credentials_by_subject(env: Env, subject_did: Symbol) -> Vec<Symbol> {
-        let credentials_key = symbol_short!("creds");
-        let credentials: Map<Symbol, VerifiableCredential> = env
-            .storage()
-            .persistent()
-            .get(&credentials_key)
+        let creds: Map<Symbol, VerifiableCredential> = env
+            .storage().persistent().get(&keys::CREDS)
             .unwrap_or_else(|| Map::new(&env));
-
         let mut result = Vec::new(&env);
-        for (cred_id, credential) in credentials.iter() {
-            if credential.credential_subject.id == subject_did {
-                result.push_back(cred_id);
+        for (id, cred) in creds.iter() {
+            if cred.credential_subject.id == subject_did {
+                result.push_back(id);
             }
         }
         result
     }
 
-    // Get credentials by issuer
     pub fn get_credentials_by_issuer(env: Env, issuer_did: Symbol) -> Vec<Symbol> {
-        let credentials_key = symbol_short!("creds");
-        let credentials: Map<Symbol, VerifiableCredential> = env
-            .storage()
-            .persistent()
-            .get(&credentials_key)
+        let creds: Map<Symbol, VerifiableCredential> = env
+            .storage().persistent().get(&keys::CREDS)
             .unwrap_or_else(|| Map::new(&env));
-
         let mut result = Vec::new(&env);
-        for (cred_id, credential) in credentials.iter() {
-            if credential.issuer == issuer_did {
-                result.push_back(cred_id);
+        for (id, cred) in creds.iter() {
+            if cred.issuer == issuer_did {
+                result.push_back(id);
             }
         }
         result
     }
 
-    // Get revocation status
     pub fn get_revocation_status(env: Env, credential_id: Symbol) -> Option<RevocationEntry> {
-        let revocations_key = symbol_short!("revocatn");
         let revocations: Map<Symbol, RevocationEntry> = env
-            .storage()
-            .persistent()
-            .get(&revocations_key)
+            .storage().persistent().get(&keys::REVOCATN)
             .unwrap_or_else(|| Map::new(&env));
-
         revocations.get(credential_id)
     }
 
-    // Get credential count
     pub fn get_credential_count(env: Env) -> u64 {
-        let counter_key = symbol_short!("vc_cnt");
-        env.storage().persistent().get(&counter_key).unwrap_or(0)
+        env.storage().persistent().get(&keys::VC_CNT).unwrap_or(0)
     }
 
-    // Get all credentials (for admin)
     pub fn get_all_credentials(env: Env) -> Vec<Symbol> {
-        let credentials_key = symbol_short!("creds");
-        let credentials: Map<Symbol, VerifiableCredential> = env
-            .storage()
-            .persistent()
-            .get(&credentials_key)
+        let creds: Map<Symbol, VerifiableCredential> = env
+            .storage().persistent().get(&keys::CREDS)
             .unwrap_or_else(|| Map::new(&env));
-
         let mut result = Vec::new(&env);
-        for (cred_id, _) in credentials.iter() {
-            result.push_back(cred_id);
+        for (id, _) in creds.iter() {
+            result.push_back(id);
         }
         result
     }
 
-    // Check if credential is revoked (internal helper)
-    fn is_revoked(env: Env, credential_id: Symbol) -> bool {
-        let revocations_key = symbol_short!("revocatn");
-        let revocations: Map<Symbol, RevocationEntry> = env
-            .storage()
-            .persistent()
-            .get(&revocations_key)
-            .unwrap_or_else(|| Map::new(&env));
+    // ── Internal helpers ──────────────────────────────────────────────────
 
-        revocations.contains_key(credential_id)
+    fn is_revoked(env: &Env, credential_id: &Symbol) -> bool {
+        let revocations: Map<Symbol, RevocationEntry> = env
+            .storage().persistent().get(&keys::REVOCATN)
+            .unwrap_or_else(|| Map::new(env));
+        revocations.contains_key(credential_id.clone())
     }
 
-    // Get credential (internal helper)
-    fn get_credential(env: Env, credential_id: Symbol) -> Result<VerifiableCredential, VCError> {
-        let credentials_key = symbol_short!("creds");
-        let credentials: Map<Symbol, VerifiableCredential> = env
-            .storage()
-            .persistent()
-            .get(&credentials_key)
+    fn load_cred(env: &Env, credential_id: &Symbol) -> Result<VerifiableCredential, VCError> {
+        let creds: Map<Symbol, VerifiableCredential> = env
+            .storage().persistent().get(&keys::CREDS)
             .ok_or(VCError::CredentialNotFound)?;
+        creds.get(credential_id.clone()).ok_or(VCError::CredentialNotFound)
+    }
 
-        credentials.get(credential_id).ok_or(VCError::CredentialNotFound)
+    /// Build a short unique Symbol from a counter.  Max 9 chars.
+    fn count_symbol(env: &Env, count: u64, prefix: &str) -> Symbol {
+        let digits = b"0123456789abcdefghijklmnopqrstuvwxyz";
+        let base = 36u64;
+        let mut buf = [0u8; 9];
+        let pb = prefix.as_bytes();
+        let plen = pb.len().min(2);
+        buf[..plen].copy_from_slice(&pb[..plen]);
+
+        let mut n = count;
+        let mut pos = 8usize;
+        loop {
+            buf[pos] = digits[(n % base) as usize];
+            n /= base;
+            if n == 0 || pos == plen {
+                break;
+            }
+            pos -= 1;
+        }
+
+        let start = buf[plen..].iter().position(|&b| b != 0)
+            .map(|p| p + plen)
+            .unwrap_or(plen);
+        let s = core::str::from_utf8(&buf[start..]).unwrap_or("x0");
+        Symbol::new(env, s)
     }
 }

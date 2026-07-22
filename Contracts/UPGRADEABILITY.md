@@ -364,39 +364,93 @@ pub fn execute_upgrade(
 - Sets executed flag to true
 - Locks proposal (no further changes)
 
-## 5. Testing & Validation
+## 5. Initializer Protection
 
-### 5.1 Test Coverage
+### 5.1 Pattern
 
-The implementation includes comprehensive tests:
+Every upgradeable contract uses the shared `upgradeability` crate for
+initializer protection.  The guard uses a single persistent storage key
+(`"init"`) that is written during the first successful call to
+`initialize()`.  All subsequent calls check this key and return an
+`AlreadyInitialized` error before touching any other state.
 
-```
-✓ test_contract_initialization
-  └─ Verifies proper init with roles
+```rust
+// Every initialize() implementation follows this pattern:
+pub fn initialize(env: Env, admin: Address, ...) -> Result<(), XxxError> {
+    // 1. Check guard first — before any state is written.
+    if upgradeability::is_initialized(&env) {
+        return Err(XxxError::AlreadyInitialized);
+    }
+    // 2. Atomically mark initialized.
+    upgradeability::mark_initialized(&env);
 
-✓ test_upgrade_proposal_creation
-  └─ Proposal ID generation and storage
-
-✓ test_upgrade_proposal_approval_flow
-  └─ Multi-step approval reaching threshold
-
-✓ test_upgrade_timelock_enforcement
-  └─ Prevents execution before delay expires
-
-✓ test_upgrade_rejection_flow
-  └─ Approver can reject at any time
-
-✓ test_upgrade_cancellation_by_admin
-  └─ Admin can cancel pending proposals
-
-✓ test_multi_sig_protection
-  └─ M-of-N signature requirements
-
-✓ test_duplicate_approval_prevention
-  └─ Each signer signs only once
+    // 3. Write the rest of the initialization state.
+    // ...
+    Ok(())
+}
 ```
 
-### 5.2 Rollback Testing
+**Why `is_initialized` + `mark_initialized` instead of `initializer_guard`?**
+
+Using the two-step form returns a typed error rather than panicking, which
+allows callers (e.g., the deploy script and integration tests) to inspect
+the exact failure mode rather than catching an opaque host-level trap.
+
+### 5.2 Contracts with Initializer Protection
+
+| Contract                | Error variant           | Guard location      |
+|-------------------------|-------------------------|---------------------|
+| `trading`               | `Unauthorized` (panic)  | `initializer_guard` |
+| `messaging`             | `Unauthorized` (panic)  | `initializer_guard` |
+| `did-registry`          | `AlreadyInitialized`    | `is_initialized`    |
+| `identity-hub`          | `AlreadyInitialized`    | `is_initialized`    |
+| `verifiable-credentials`| `AlreadyInitialized`    | `is_initialized`    |
+
+### 5.3 Test Coverage
+
+```
+upgradeability crate (cargo test -p upgradeability)
+  ✓ test_fresh_contract_is_not_initialized
+  ✓ test_mark_initialized_sets_flag
+  ✓ test_initializer_guard_succeeds_on_first_call
+  ✓ test_is_initialized_returns_false_before_mark
+  ✓ test_is_initialized_returns_true_after_mark
+
+integration-tests/tests/initializer_protection.rs
+  ✓ test_trading_contract_initializes_successfully
+  ✓ test_trading_double_initialization_blocked
+  ✓ test_messaging_contract_initializes_successfully
+  ✓ test_messaging_double_initialization_blocked
+
+integration-tests/tests/upgrade_paths.rs  (NEW)
+  ✓ did_registry_initializes_once
+  ✓ did_registry_double_init_blocked
+  ✓ did_registry_state_preserved_across_upgrade_simulation
+  ✓ identity_hub_initializes_once
+  ✓ identity_hub_double_init_blocked
+  ✓ identity_hub_hub_count_preserved_after_init
+  ✓ identity_hub_upgrade_simulation_guard
+  ✓ vc_initializes_once
+  ✓ vc_double_init_blocked
+  ✓ vc_credential_count_starts_at_zero
+  ✓ vc_issue_and_verify_round_trip
+  ✓ vc_revoke_invalidates_credential
+  ✓ vc_upgrade_simulation_guard
+
+did-registry crate (cargo test -p did-registry)
+  ✓ test_initialize
+  ✓ test_double_initialize_is_rejected
+  ✓ test_create_stellar_did
+  ✓ test_create_key_did
+  ✓ test_add_verification_method
+  ✓ test_add_service
+  ✓ test_deactivate_did
+  ✓ test_get_all_dids
+```
+
+## 6. Testing & Validation
+
+### 6.1 Rollback Testing
 
 While Soroban contracts are immutable, rollback scenarios are tested:
 
@@ -414,7 +468,7 @@ Time Requirements:
   • Recommended = 4-24 hours
 ```
 
-## 6. Security Considerations
+## 7. Security Considerations
 
 ### 6.1 Attack Vectors & Mitigations
 
@@ -453,7 +507,7 @@ Time Requirements:
 - Contract bug in shared library
 - Social engineering of signers
 
-## 7. State Management & Upgradability
+## 8. State Management & Upgradability
 
 ### 7.1 Version Tracking
 
@@ -502,7 +556,7 @@ pub fn migrate_from_v1(env: Env) {
 }
 ```
 
-## 8. Transparency & User Communication
+## 9. Transparency & User Communication
 
 ### 8.1 Proposal Visibility
 
@@ -537,7 +591,7 @@ T0 + 48h:   Timelock expires, upgrade ready
 T0 + 49h:   Upgrade executes if approved
 ```
 
-## 9. Deployment Checklist
+## 10. Deployment Checklist
 
 Before deploying to mainnet:
 
@@ -548,11 +602,16 @@ Before deploying to mainnet:
 - [ ] Approval workflow tested with dummy proposals
 - [ ] Timelock enforcement verified
 - [ ] Rejection/cancellation tested
+- [ ] `cargo test -p upgradeability` passes
+- [ ] `cargo test -p integration-tests --test initializer_protection` passes
+- [ ] `cargo test -p integration-tests --test upgrade_paths` passes
+- [ ] `cargo test -p did-registry` passes
+- [ ] Double-init rejection verified on deployed contracts (deploy script step 7)
 - [ ] Documentation shared with community
 - [ ] Emergency escalation path documented
 - [ ] Monitoring alerts configured
 
-## 10. References
+## 11. References
 
 ### Soroban/Stellar Documentation
 - [Soroban Smart Contracts](https://developers.stellar.org/docs/smart-contracts)
